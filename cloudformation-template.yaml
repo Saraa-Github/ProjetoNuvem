@@ -1,0 +1,901 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Projeto Integrador Cloud Developing Mackenzie
+  CRUD API + Lambda Report + RDS Privado + ECS Fargate + API Gateway
+
+  Recursos criados:
+  - VPC com subnets públicas e privadas
+  - RDS PostgreSQL em subnet privada
+  - ECS Fargate para rodar a API
+  - API Gateway com proxy simples
+  - Lambda para gerar relatórios
+  - Security Groups, IAM Roles, CloudWatch Logs
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dev
+    Description: Nome do ambiente (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+  DBName:
+    Type: String
+    Default: tasks_db
+    Description: Nome do banco de dados
+
+  DBUsername:
+    Type: String
+    Default: postgres
+    NoEcho: true
+    Description: Usuário principal do RDS
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+    Description: Senha do RDS (mínimo 12 caracteres)
+
+  ECSTaskMemory:
+    Type: Number
+    Default: 512
+    AllowedValues: [256, 512, 1024, 2048, 4096]
+
+  ECSTaskCPU:
+    Type: Number
+    Default: 256
+    AllowedValues: [256, 512, 1024, 2048, 4096]
+
+  ContainerImage:
+    Type: String
+    Default: node:20-alpine
+    Description: Imagem Docker para a aplicação
+
+  ContainerPort:
+    Type: Number
+    Default: 3000
+    Description: Porta da aplicação no container
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Configuração de Ambiente"
+        Parameters:
+          - EnvironmentName
+      - Label:
+          default: "RDS Database"
+        Parameters:
+          - DBName
+          - DBUsername
+          - DBPassword
+      - Label:
+          default: "ECS Fargate"
+        Parameters:
+          - ECSTaskMemory
+          - ECSTaskCPU
+          - ContainerImage
+          - ContainerPort
+
+Resources:
+  # ==================== VPC ====================
+  TasksVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-tasks-vpc'
+
+  # Subnet Pública 1
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TasksVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-subnet-1'
+
+  # Subnet Pública 2
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TasksVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-subnet-2'
+
+  # Subnet Privada 1 (RDS)
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TasksVPC
+      CidrBlock: 10.0.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-private-subnet-1'
+
+  # Subnet Privada 2 (RDS)
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TasksVPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-private-subnet-2'
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-igw'
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TasksVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Route Table Pública
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TasksVPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-rt'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # NAT Gateway (para saída das subnets privadas)
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-nat-eip'
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-nat'
+
+  # Route Table Privada
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TasksVPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-private-rt'
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ==================== SECURITY GROUPS ====================
+
+  # Security Group para ALB
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvironmentName}-alb-sg'
+      GroupDescription: Security Group para ALB
+      VpcId: !Ref TasksVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-alb-sg'
+
+  # Security Group para ECS
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvironmentName}-ecs-sg'
+      GroupDescription: Security Group para ECS
+      VpcId: !Ref TasksVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: Tráfego do ALB
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-ecs-sg'
+
+  # Security Group para RDS
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvironmentName}-rds-sg'
+      GroupDescription: Security Group para RDS (sem acesso externo)
+      VpcId: !Ref TasksVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref ECSSecurityGroup
+          Description: PostgreSQL do ECS
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-rds-sg'
+
+  # ==================== RDS DATABASE ====================
+
+  # DB Subnet Group (privado)
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub '${EnvironmentName}-db-subnet-group'
+      DBSubnetGroupDescription: Subnet Group para RDS em subnets privadas
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-db-subnet-group'
+
+  # RDS Instance
+  RDSDatabase:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-tasks-db'
+      Engine: postgres
+      EngineVersion: '16.1'
+      DBInstanceClass: db.t4g.micro
+      AllocatedStorage: '20'
+      StorageType: gp3
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      MultiAZ: true
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      PubliclyAccessible: false
+      EnableCloudwatchLogsExports:
+        - postgresql
+      EnableIAMDatabaseAuthentication: true
+      DeletionProtection: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-tasks-db'
+
+  # ==================== ECR ====================
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub '${EnvironmentName}-tasks-api'
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText:
+          Version: '2012-10-17'
+          Rules:
+            - RulePriority: 1
+              Description: Manter últimas 10 imagens
+              Selection:
+                TagStatus: any
+                CountType: imageCountMoreThan
+                CountNumber: 10
+              Action:
+                Type: expire
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-tasks-api'
+
+  # ==================== CloudWatch Logs ====================
+
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${EnvironmentName}-tasks-api'
+      RetentionInDays: 7
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${EnvironmentName}-tasks-report'
+      RetentionInDays: 7
+
+  # ==================== IAM ROLES ====================
+
+  # IAM Role para ECS Task
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: !Sub '${EnvironmentName}-ecs-task-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt ECSLogGroup.Arn
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchCheckLayerAvailability
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !GetAtt DBSecretPassword.Arn
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub '${EnvironmentName}-ecs-task-role-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt ECSLogGroup.Arn
+
+  # IAM Role para Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub '${EnvironmentName}-lambda-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt LambdaLogGroup.Arn
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+
+  # ==================== SECRETS MANAGER ====================
+
+  DBSecretPassword:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${EnvironmentName}/rds/password'
+      Description: Senha do RDS
+      SecretString: !Sub |
+        {
+          "username": "${DBUsername}",
+          "password": "${DBPassword}",
+          "engine": "postgres",
+          "host": "${RDSDatabase.Endpoint.Address}",
+          "port": 5432,
+          "dbname": "${DBName}"
+        }
+
+  # ==================== ALB ====================
+
+  TasksALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${EnvironmentName}-tasks-alb'
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-tasks-alb'
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${EnvironmentName}-tasks-tg'
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !Ref TasksVPC
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-tasks-tg'
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref TasksALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  # ==================== ECS ====================
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${EnvironmentName}-tasks-cluster'
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-tasks-cluster'
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${EnvironmentName}-tasks-api'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref ECSTaskCPU
+      Memory: !Ref ECSTaskMemory
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub '${EnvironmentName}-tasks-api'
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}:latest'
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              HostPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: DB_HOST
+              Value: !GetAtt RDSDatabase.Endpoint.Address
+            - Name: DB_PORT
+              Value: '5432'
+            - Name: DB_USER
+              Value: !Ref DBUsername
+            - Name: DB_NAME
+              Value: !Ref DBName
+            - Name: DB_SSL
+              Value: 'true'
+            - Name: NODE_ENV
+              Value: !Ref EnvironmentName
+            - Name: PORT
+              Value: !Ref ContainerPort
+          Secrets:
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub '${DBSecretPassword}:password::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub '${EnvironmentName}-tasks-service'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 2
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      LoadBalancers:
+        - ContainerName: !Sub '${EnvironmentName}-tasks-api'
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref ALBTargetGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-tasks-service'
+
+  # Auto Scaling Target
+  ECSScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 4
+      MinCapacity: 2
+      ResourceId: !Sub 'service/${ECSCluster}/${ECSService.Name}'
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ECSScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${EnvironmentName}-ecs-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ECSScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleOutCooldown: 60
+        ScaleInCooldown: 300
+
+  # ==================== API GATEWAY ====================
+
+  TasksAPIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${EnvironmentName}-tasks-api'
+      Description: API Gateway proxy para Tasks API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # Resource para proxy simples
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref TasksAPIGateway
+      ParentId: !GetAtt TasksAPIGateway.RootResourceId
+      PathPart: '{proxy+}'
+
+  # Método para proxy simples
+  ProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref TasksAPIGateway
+      ResourceId: !Ref ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        Uri: !Sub 'http://${TasksALB.DNSName}:80/{proxy}'
+        IntegrationResponses:
+          - StatusCode: 200
+
+  # Resource para /report
+  ReportResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref TasksAPIGateway
+      ParentId: !GetAtt TasksAPIGateway.RootResourceId
+      PathPart: report
+
+  # Método GET /report
+  ReportMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref TasksAPIGateway
+      ResourceId: !Ref ReportResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TasksReportFunction.Arn}/invocations'
+
+  # Deployment
+  APIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ProxyMethod
+      - ReportMethod
+    Properties:
+      RestApiId: !Ref TasksAPIGateway
+      StageName: !Ref EnvironmentName
+
+  # Permission para API Gateway chamar Lambda
+  APIGatewayLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TasksReportFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${TasksAPIGateway}/*/*'
+
+  # ==================== LAMBDA ====================
+
+  TasksReportFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-tasks-report'
+      Runtime: python3.11
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: index.lambda_handler
+      Timeout: 30
+      Environment:
+        Variables:
+          API_GATEWAY_URL: !Sub 'http://${TasksALB.DNSName}'
+      Code:
+        ZipFile: |
+          import json
+          import http.client
+          from urllib.parse import urlparse
+          import logging
+          from datetime import datetime
+          import os
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def call_api(url, method='GET'):
+              try:
+                  logger.info(f'Chamando API: {method} {url}')
+
+                  parsed_url = urlparse(url)
+                  port = 443 if parsed_url.scheme == 'https' else 80
+
+                  if parsed_url.scheme == 'https':
+                      conn = http.client.HTTPSConnection(parsed_url.netloc, port, timeout=10)
+                  else:
+                      conn = http.client.HTTPConnection(parsed_url.netloc, port, timeout=10)
+
+                  path = parsed_url.path
+                  if parsed_url.query:
+                      path += f'?{parsed_url.query}'
+
+                  headers = {
+                      'Content-Type': 'application/json',
+                      'User-Agent': 'AWS-Lambda-Report-Function'
+                  }
+
+                  conn.request(method, path, headers=headers)
+                  response = conn.getresponse()
+                  data = response.read().decode('utf-8')
+                  conn.close()
+
+                  if response.status == 200:
+                      return json.loads(data)
+                  else:
+                      logger.error(f'API retornou status {response.status}: {data}')
+                      return None
+
+              except Exception as e:
+                  logger.error(f'Erro ao chamar API: {str(e)}')
+                  return None
+
+          def lambda_handler(event, context):
+              try:
+                  logger.info(f'Evento: {json.dumps(event)}')
+
+                  api_url = os.environ.get('API_GATEWAY_URL')
+                  if not api_url:
+                      return {
+                          'statusCode': 500,
+                          'body': json.dumps({'success': False, 'error': 'API_GATEWAY_URL não configurada'})
+                      }
+
+                  tasks_url = f'{api_url}/tasks'
+                  api_response = call_api(tasks_url)
+
+                  if not api_response or 'data' not in api_response:
+                      return {
+                          'statusCode': 500,
+                          'body': json.dumps({'success': False, 'error': 'Erro ao obter dados da API'})
+                      }
+
+                  tasks = api_response.get('data', [])
+
+                  # Calcular estatísticas
+                  stats = {
+                      'total_tasks': len(tasks),
+                      'tasks_by_status': {'pending': 0, 'in_progress': 0, 'completed': 0},
+                      'tasks_by_priority': {'low': 0, 'medium': 0, 'high': 0},
+                      'completion_rate': 0.0,
+                      'tasks_in_progress': 0,
+                      'high_priority_pending': 0
+                  }
+
+                  for task in tasks:
+                      status = task.get('status', 'pending')
+                      priority = task.get('priority', 'medium')
+
+                      if status in stats['tasks_by_status']:
+                          stats['tasks_by_status'][status] += 1
+                      if priority in stats['tasks_by_priority']:
+                          stats['tasks_by_priority'][priority] += 1
+
+                      if status == 'in_progress':
+                          stats['tasks_in_progress'] += 1
+                      if status == 'pending' and priority == 'high':
+                          stats['high_priority_pending'] += 1
+
+                  if len(tasks) > 0:
+                      completed = stats['tasks_by_status']['completed']
+                      stats['completion_rate'] = round((completed / len(tasks)) * 100, 2)
+
+                  return {
+                      'statusCode': 200,
+                      'headers': {'Content-Type': 'application/json'},
+                      'body': json.dumps({
+                          'success': True,
+                          'data': stats,
+                          'generated_at': datetime.utcnow().isoformat()
+                      }, indent=2)
+                  }
+
+              except Exception as e:
+                  logger.error(f'Erro: {str(e)}', exc_info=True)
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'success': False, 'error': str(e)})
+                  }
+
+Outputs:
+  VPCId:
+    Description: ID da VPC criada
+    Value: !Ref TasksVPC
+    Export:
+      Name: !Sub '${EnvironmentName}-VPC-Id'
+
+  RDSEndpoint:
+    Description: Endpoint do banco RDS (privado)
+    Value: !GetAtt RDSDatabase.Endpoint.Address
+    Export:
+      Name: !Sub '${EnvironmentName}-RDS-Endpoint'
+
+  RDSPort:
+    Description: Porta do banco RDS
+    Value: !GetAtt RDSDatabase.Endpoint.Port
+    Export:
+      Name: !Sub '${EnvironmentName}-RDS-Port'
+
+  ECRRepositoryUri:
+    Description: URI do repositório ECR
+    Value: !GetAtt ECRRepository.RepositoryUri
+    Export:
+      Name: !Sub '${EnvironmentName}-ECR-Uri'
+
+  ALBDNSName:
+    Description: DNS Name do ALB
+    Value: !GetAtt TasksALB.DNSName
+    Export:
+      Name: !Sub '${EnvironmentName}-ALB-DNS'
+
+  APIGatewayURL:
+    Description: URL do API Gateway
+    Value: !Sub 'https://${TasksAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}'
+    Export:
+      Name: !Sub '${EnvironmentName}-APIGateway-URL'
+
+  ReportEndpoint:
+    Description: Endpoint para gerar relatórios
+    Value: !Sub 'https://${TasksAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}/report'
+    Export:
+      Name: !Sub '${EnvironmentName}-Report-Endpoint'
+
+  ECSClusterName:
+    Description: Nome do cluster ECS
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub '${EnvironmentName}-ECS-Cluster'
+
+  LambdaFunctionName:
+    Description: Nome da função Lambda
+    Value: !Ref TasksReportFunction
+    Export:
+      Name: !Sub '${EnvironmentName}-Lambda-Function'
+
+  SecretArn:
+    Description: ARN da Secret com credenciais RDS
+    Value: !GetAtt DBSecretPassword.Id
+    Export:
+      Name: !Sub '${EnvironmentName}-DB-Secret'

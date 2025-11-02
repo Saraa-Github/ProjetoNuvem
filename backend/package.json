@@ -1,0 +1,23 @@
+{
+  "name": "mackenzie-cloud-crud-backend",
+  "version": "1.0.0",
+  "description": "Backend para projeto integrador Cloud Developing - Lista de Tarefas",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "keywords": ["express", "postgresql", "crud", "aws", "rds"],
+  "author": "Grupo Mackenzie",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "dotenv": "^16.4.5",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
