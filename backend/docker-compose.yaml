@@ -6,14 +6,14 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DB_HOST=${DB_HOST}
-      - DB_PORT=${DB_PORT}
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_NAME=${DB_NAME}
-      - DB_SSL=${DB_SSL}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=SenhaReceitas123
+      - DB_NAME=tasks_db
+      - DB_SSL=false
       - PORT=3000
-      - NODE_ENV=production
+      - NODE_ENV=development
     depends_on:
       - postgres
     restart: unless-stopped
