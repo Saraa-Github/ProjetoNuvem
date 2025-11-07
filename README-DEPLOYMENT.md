@@ -54,304 +54,103 @@ projeto-integrador/
 └── README.md                    # Este arquivo
 ```
 
-## 🚀 Quick Start
+Projeto Integrador - Cloud Developing 2025/1
+Lista de Tarefas + AWS (EC2 + Lambda + RDS + API Gateway)
 
-### 1. Clonar o Repositório
+📋 Visão Geral
+Sistema de gerenciamento de tarefas com backend Node.js/Express, banco de dados PostgreSQL em RDS, container Docker em EC2, API Gateway e Lambda para relatórios.
+Toda infraestrutura foi criada manualmente pelo console da AWS, sem uso de automação ou templates. Cada recurso foi configurado individualmente: instância EC2, RDS PostgreSQL, API Gateway e Lambda.​
 
-```bash
-git clone https://github.com/seu-usuario/projeto-integrador.git
-cd projeto-integrador
-```
+Serviços Utilizados
+EC2 (Docker): Backend Node.js/Express rodando em container Docker, exposto na porta 3000 via Security Group configurado manualmente.​
 
-### 2. Backend Local (com Supabase)
+RDS PostgreSQL: Instância criada em subnet privada, liberada apenas para o Security Group da EC2, exigindo conexão SSL (DB_SSL=true no .env).​
 
-```bash
-cd backend
+API Gateway: Proxy direto para EC2 (endpoints CRUD) e rota /report integrada ao Lambda.
 
-# Instalar dependências
-npm install
+Lambda: Função criada para consumir estatísticas da API e gerar o relatório.
 
-# Copiar e configurar .env
-cp .env.example .env
-# Editar .env com credenciais do banco de dados
+Estrutura do Repositório
+text
+projeto-integrador/
+├── backend/
+│   ├── src/
+│   └── Dockerfile
+├── lambda/
+│   └── handler.js
+└── README.md
+Guia de Deploy Manual
+1. EC2 (Backend)
+Criar instância EC2 (Amazon Linux)
 
-# Rodar script SQL no banco de dados (RDS / Supabase ou Docker)
-# (SQL Editor do Supabase → copiar/colar init.sql)
+Instalar Docker
 
-# Para rodar com docker, executar "docker-compose up"
+Clonar o projeto e configurar .env com dados do RDS
 
-# Iniciar servidor
-npm run dev
-# API em http://localhost:3000
-```
+Rodar container:
 
-### 3. Testar APIs
+bash
+docker build -t backend-api .
+docker run -p 3000:3000 --env-file .env backend-api
+Liberar portas: SSH e HTTP para testes, TCP personalizado porta 3000. Configure o Security Group para permitir acesso à porta 3000 de forma restrita (por IP fonte ou API Gateway).​
 
-```bash
-# Dar permissão ao script
-chmod +x backend/test-api.sh
+2. RDS (Banco de Dados)
+Criar instância PostgreSQL em subnet privada
 
-# Rodar testes
-cd backend
-./test-api.sh http://localhost:3000 verbose
-cd ..
-```
+Anotar endpoint, usuário, senha
 
-### 4. Deploy na AWS
+Liberar acesso ao Security Group da EC2 (porta 5432)
 
-```bash
-# Dar permissão ao script deploy
-chmod +x deploy.sh
+Habilitar conexão SSL (DB_SSL=true)
 
-# Criar stack CloudFormation
-./deploy.sh create dev "MyPassword123Min12Chars"
+3. API Gateway
+Criar API REST
 
-# Aguardar conclusão (~15 minutos)
-
-# Obter outputs
-./deploy.sh describe dev
+Configurar proxy para EC2 na porta 3000 (rota /tasks)
 
-# Usar API Gateway URL nos outputs
-```
+Criar rota /report integrada à Lambda
 
-## 📚 Documentação
-
-### Arquivos Principais
-
-| Arquivo | Descrição |
-|---------|-----------|
-| `INFRASTRUCTURE.md` | Documentação completa da AWS |
-| `backend/README.md` | Como rodar backend |
-| `cloudformation-template.yaml` | Template IaC (26KB) |
-| `lambda/handler.py` | Função Lambda Python |
-
-### Fluxos de Requisições
-
-#### 1. CRUD (GET, POST, PUT, PATCH, DELETE)
-
-```
-Cliente
-  ↓
-API Gateway (/{proxy+})
-  ↓
-HTTP Proxy → ALB:80
-  ↓
-ECS Task (Container)
-  ↓
-RDS PostgreSQL
-```
-
-#### 2. Relatório (GET /report)
-
-```
-Cliente
-  ↓
-API Gateway (/report)
-  ↓
-Lambda (Python)
-  ↓
-HTTP call → ALB:80/tasks
-  ↓
-Processa dados
-  ↓
-Retorna JSON com estatísticas
-```
-
-## 🔧 Endpoints da API
-
-### Tasks CRUD
-
-```bash
-# Listar todas
-GET /tasks
-
-# Filtrar
-GET /tasks?status=pending&priority=high
-
-# Buscar uma
-GET /tasks/:id
-
-# Criar
-POST /tasks
-Body: {
-  "title": "Estudar Lambda",
-  "description": "Revisar módulo 9",
-  "status": "pending",
-  "priority": "high"
-}
-
-# Atualizar completo
-PUT /tasks/:id
-Body: { ...todos os campos }
-
-# Atualizar parcial
-PATCH /tasks/:id
-Body: { "status": "completed" }
-
-# Deletar
-DELETE /tasks/:id
-```
-
-### Especiais
-
-```bash
-# Health Check
-GET /health
-
-# Relatório (Lambda)
-GET /report
-Response: {
-  "total_tasks": 10,
-  "tasks_by_status": {...},
-  "completion_rate": 30.0,
-  ...
-}
-```
-
-## 🏗️ Arquitetura AWS
-
-```
-┌─────────────────────────────────────────────────────┐
-│                    Internet                          │
-└────────────────────┬────────────────────────────────┘
-                     │
-        ┌────────────▼─────────────┐
-        │   API Gateway (Regional) │
-        │  /{proxy+}  │  /report   │
-        └────┬───────────────┬────┘
-             │               │
-             │           ┌───▼──────┐
-             │           │ Lambda   │
-             │           │ (Python) │
-             │           └────┬─────┘
-             │                │
-        ┌────▼────────────────▼──┐
-        │ ALB (Public Subnets)   │
-        └────┬────────────────────┘
-             │
-   ┌─────────▼─────────┐
-   │   VPC 10.0.0.0/16 │
-   │                   │
-   │  ┌──────────────┐ │
-   │  │ ECS Fargate  │ │
-   │  │ (Private SN) │ │
-   │  └──────┬───────┘ │
-   │         │         │
-   │  ┌──────▼──────┐  │
-   │  │ RDS PG      │  │
-   │  │ (Private)   │  │
-   │  └─────────────┘  │
-   │                   │
-   └───────────────────┘
-```
-
-## 📝 Variáveis de Ambiente
-
-### Backend
-
-```env
-DB_HOST=aws-xxx.pooler.supabase.com
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=xxxxx
-DB_NAME=postgres
-DB_SSL=true
-PORT=3000
-NODE_ENV=development
-```
-
-### Lambda
-
-```env
-API_GATEWAY_URL=http://alb-dns-name
-```
-
-## 🔐 Segurança
-
-- ✅ RDS em subnet privada (sem acesso externo)
-- ✅ Security Groups restritivos
-- ✅ Credenciais em AWS Secrets Manager
-- ✅ IAM Roles com princípio de menor privilégio
-- ✅ Encryption at rest (RDS)
-- ✅ Multi-AZ para alta disponibilidade
-
-## 📊 Monitoramento
-
-### CloudWatch
-
-- **ECS Logs**: `/ecs/dev-tasks-api`
-- **Lambda Logs**: `/aws/lambda/dev-tasks-report`
-- **Métricas**: CPU, Memory, Network, Requests
-
-### Alertas Recomendados
-
-- RDS CPU > 80%
-- ECS CPU > 90%
-- ALB unhealthy targets
-- Lambda errors > 0
-
-## 💾 Backup e Disaster Recovery
-
-- RDS: Backup automático (7 dias)
-- ECR: Últimas 10 imagens mantidas
-- CloudFormation: Template versionado
-
-## 🧪 Testes
-
-### Testes Unitários/Integração
-
-```bash
-cd backend
-./test-api.sh http://localhost:3000 verbose
-```
-
-### Testes de Carga (opcional)
-
-```bash
-# Com Apache Bench
-ab -n 100 -c 10 http://alb-dns/tasks
-
-# Com hey
-hey -n 100 -c 10 http://alb-dns/tasks
-```
-
-## 🚢 CI/CD (Bonus)
-
-Adicionar CodePipeline + CodeBuild para automação:
-
-```yaml
-Source: GitHub
-Build: CodeBuild (docker build + push ECR)
-Deploy: CloudFormation Update
-```
-
-## 📖 Referências
-
-- [AWS CloudFormation](https://docs.aws.amazon.com/cloudformation/)
-- [ECS Fargate](https://docs.aws.amazon.com/AmazonECS/)
-- [RDS PostgreSQL](https://docs.aws.amazon.com/AmazonRDS/)
-- [API Gateway](https://docs.aws.amazon.com/apigateway/)
-- [AWS Lambda](https://docs.aws.amazon.com/lambda/)
-- [Express.js](https://expressjs.com/)
-
-## 👥 Grupo
-
-| RA | Nome | Responsabilidade |
-|----|------|-----------------|
-| xxxxx | ... | Backend |
-| xxxxx | ... | Infraestrutura AWS |
-| xxxxx | ... | Lambda |
-| xxxxx | ... | Documentação |
-| xxxxx | ... | Apresentação |
-
-## 📞 Suporte
-
-- Issues: GitHub Issues
-- Dúvidas: Verificar `INFRASTRUCTURE.md`
-- Troubleshooting: Seção em `INFRASTRUCTURE.md`
-
----
-
-**Versão**: 1.0  
-**Data**: Novembro 2025  
-**Projeto**: Mackenzie - Cloud Developing 2025/1
+4. Lambda
+Criar função com runtime Node.js
+
+Adicionar código para consumir estatísticas do backend via API Gateway
+
+Configurar variável de ambiente API_URL com o endpoint da API
+
+Fluxos de Requisições
+CRUD: Cliente → API Gateway → EC2 (Docker) → RDS
+
+Relatório: Cliente → API Gateway (/report) → Lambda → EC2 (Docker) → RDS → Lambda → JSON estatísticas
+
+Segurança
+RDS em subnet privada sem acesso externo
+
+Security Groups das instâncias EC2 e RDS configurados manualmente
+
+Credenciais sensíveis protegidas (.env não publicado)
+
+API Gateway expõe apenas o mínimo necessário
+
+Dificuldades e Observações
+O backend exigiu configuração SSL explícita para conectar ao RDS (DB_SSL=true)
+
+O Lambda foi adaptado para Node.js pelo limite do ambiente disponível, reescrevendo a lógica do relatório
+
+Todos recursos (incluindo regras dos Security Groups) foram criados manualmente conforme documentação técnica​
+
+Grupo
+Gabriel Nóbrega Neri — Infraestrutura/Backend
+
+Maria Clara Torres Ramos — Vídeo/Testes
+
+Matheus Ramalho Malícia — Backend/Infraestrutura
+
+Sara Oliveira Silva Omena — Backend/API Gateway
+
+Tamires Mendes da Silva — Lambda/Documentação
+
+Versão: 1.0
+Data: Novembro 2025
+Projeto: Mackenzie - Cloud Developing 2025/1
+
+Basta copiar este README – já adequado ao modo de deploy manual e sua configuração real.​
