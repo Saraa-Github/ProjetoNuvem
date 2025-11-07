@@ -144,6 +144,7 @@ Lambda foi adaptado para rodar com Node.js devido limitações do runtime.
 Toda operação/teste (inclusive integração entre serviços) foi realizada manualmente pelo console AWS.​
 
 Grupo
+
 Gabriel Nóbrega Neri — Infraestrutura/Backend
 
 Maria Clara Torres Ramos — Vídeo/Testes
