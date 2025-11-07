@@ -1,6 +1,6 @@
 # Projeto Integrador - Cloud Developing 2025/1
 
-Lista de Tarefas + AWS (ECS + Lambda + RDS + API Gateway)
+Lista de Tarefas + AWS (EC2 + Lambda + RDS + API Gateway)
 
 ## 📋 Visão Geral
 
@@ -8,15 +8,12 @@ Sistema de **gerenciamento de tarefas** com backend Node.js/Express, banco de da
 
 - ✅ **Backend API**: Express.js com CRUD completo
 - ✅ **Banco de Dados**: AWS RDS PostgreSQL (subnet privada)
-- ✅ **Containerização**: Docker + Amazon ECR
-- ✅ **Orquestração**: AWS ECS Fargate
+- ✅ **Containerização**: Docker
 - ✅ **API Gateway**: Proxy simples + rota /report
 - ✅ **Serverless**: AWS Lambda para gerar relatórios
-- ✅ **Load Balancer**: ALB com health check
-- ✅ **Infraestrutura as Code**: CloudFormation
 - ✅ **Rede Segura**: VPC com subnets públicas/privadas
 
-## 🎯 Escopo do Projeto
+## Escopo do Projeto
 
 ### Avaliação (100 pontos)
 
